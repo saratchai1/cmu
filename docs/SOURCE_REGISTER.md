@@ -373,6 +373,21 @@ https://www.sidrasolutions.com/media/189/download
 ใช้กับข้อ:
 4.1.7.2.3.9.4
 
+
+## SIDRA-13 — Road Traffic Facilities
+https://www.sidrasolutions.com/learn/sidra-model/what-kind-road-traffic-facilities-can-sidra-intersection-model
+
+หลักฐานสำคัญ:
+- fixed-time / actuated signalised intersections
+- unsignalised, metering and fully-signalised roundabouts
+- two-way stop, two-way give-way/yield, all-way stop
+- signalised/unsignalised pedestrian crossings, staged and slip/bypass crossings
+- DDI, Divergabout, CFI, RCUT and other alternative intersections
+- mixed networks up to 50 Sites
+
+ใช้กับข้อ:
+4.1.7.2.3.5.*, 4.1.7.2.3.6.1, 4.1.7.2.3.7.3
+
 ---
 
 ## Recommended procurement evidence hierarchy
