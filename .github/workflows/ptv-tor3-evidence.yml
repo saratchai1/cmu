@@ -1,0 +1,142 @@
+name: PTV TOR3 official evidence capture
+on:
+  push:
+    branches: [evidence/ptv-tor3-20260924]
+    paths: [.github/workflows/ptv-tor3-evidence.yml]
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install capture dependencies
+        run: |
+          python -m pip install --quiet requests beautifulsoup4 pillow playwright
+          python -m playwright install --with-deps chromium >/dev/null
+      - name: Capture public manufacturer evidence
+        shell: bash
+        run: |
+          mkdir -p evidence
+          cat > /tmp/capture.py <<'PY'
+          import asyncio, json, re, hashlib, io, time
+          from pathlib import Path
+          from urllib.parse import urljoin, urlparse
+          import requests
+          from bs4 import BeautifulSoup
+          from PIL import Image
+          from concurrent.futures import ThreadPoolExecutor
+          from playwright.async_api import async_playwright
+          root=Path('evidence'); root.mkdir(exist_ok=True)
+          base='https://cgi.ptvgroup.com/vision-help/VISSIM_2025_ENG/'
+          index=urljoin(base,'Content/0_TitelCopyright/Index-Container.htm')
+          session=requests.Session();session.headers['User-Agent']='Mozilla/5.0 (PTV technical evidence review)'
+          resp=session.get(index,timeout=35);resp.raise_for_status()
+          soup=BeautifulSoup(resp.content,'html.parser')
+          patterns=[
+            r'^Becoming familiar with the user interface$',r'^Application area of PTV Vissim$',
+            r'^Traffic flow model and signal control$',r'^Operating principles of the car following model$',
+            r'^Defining links$',r'^Attributes of links$',r'^Evaluating links$',r'^Evaluating nodes$',
+            r'^Defining vehicle classes$',r'^Attributes of vehicle classes$',r'^Defining vehicle types$',r'^Attributes of vehicle types$',
+            r'^Showing the user manual$',r'^Showing the PTV.*Help$',r'^Selecting network settings for units$',
+            r'^Modeling signal controllers$',r'^Using signal controller type Fixed time$',
+            r'^Opening and using the signal controller editor$',r'^Defining and editing stages$',r'^Editing stage sequence$',
+            r'^Editing signal programs$',r'^Using RBC$',r'^Base Timing Definitions$',r'^RBC Editor elements$',r'^RBC Examples$',
+            r'^Modeling intersection control without signal controller$',r'^Using conflict areas$',r'^Attributes of conflict areas$',
+            r'^Defining conflict areas$',r'^Using priority rules$',r'^Attributes of priority rules$',
+            r'^Modeling stop signs and toll counters$',r'^Attributes of stop signs and toll counters$',
+            r'^Using stop signs for right turning vehicles even if red$',r'^Defining pedestrian crossing$',
+            r'^Modeling (pedestrian crossings|conflicting traffic flows)',r'^Modeling dynamic assignment$',
+            r'^Using dynamic assignment$',r'^Differences between static and dynamic assignment$',
+            r'^Defining parameters of dynamic assignment$',r'^Using files with examples$',
+            r'^Saving a selected part of the network$',r'^Adding a network$',r'^Evaluating queue counters$',
+            r'^Defining queue counters$',r'^Performing green time optimization of stage-based fixed time controllers$',
+            r'^Linking signal controllers$',r'^Editing the driving behavior parameter Lane change behavior$',
+            r'^Performing environmental impact assessments$',r'^Evaluating emissions',r'^Exporting.*emission',
+            r'^Using the COM Interface$',r'^Using the COM interface$',r'^References$',
+            r'^Showing signal times',r'^Signal times table',r'^Editing signal head attributes',r'^Attributes of signal heads$',
+            r'^Defining signal groups$',r'^Attributes of signal controllers$',r'^Editing the driving behavior parameter car following model$'
+          ]
+          selected={}
+          for a in soup.find_all('a',href=True):
+            title=' '.join(a.get_text(' ',strip=True).split())
+            if any(re.search(p,title,re.I) for p in patterns):
+              u=urljoin(index,a['href']).split('#')[0]
+              if u.startswith(base) and u.endswith('.htm'):selected[u]=title
+          print('SELECTED',len(selected),flush=True)
+          (root/'index.html').write_bytes(resp.content)
+          manifest=[]
+          def collect(item):
+            u,title=item
+            sid=hashlib.sha256(u.encode()).hexdigest()[:10]
+            folder=root/sid;folder.mkdir(exist_ok=True)
+            rec={'id':sid,'url':u,'title':title,'images':[],'captured_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())}
+            try:
+              r=session.get(u,timeout=40);r.raise_for_status();(folder/'source.html').write_bytes(r.content)
+              s=BeautifulSoup(r.content,'html.parser'); body=s.find(id='mc-main-content') or s.find('main') or s.body or s
+              rec['text']=body.get_text('\n',strip=True);(folder/'source.txt').write_text(rec['text'])
+              seen=set()
+              for img in body.find_all('img'):
+                src=img.get('src') or img.get('data-src')
+                if not src:continue
+                iu=urljoin(u,src)
+                if iu in seen or not urlparse(iu).hostname.endswith('ptvgroup.com'):continue
+                seen.add(iu)
+                try:
+                  ir=session.get(iu,timeout=20);ir.raise_for_status()
+                  if len(ir.content)>6000000:continue
+                  im=Image.open(io.BytesIO(ir.content));w,h=im.size
+                  if w<170 or h<80:continue
+                  fn='img_%02d.png'%(len(rec['images'])+1)
+                  im.convert('RGB').save(folder/fn)
+                  rec['images'].append({'file':sid+'/'+fn,'url':iu,'width':w,'height':h,'alt':img.get('alt','')})
+                  if len(rec['images'])>=12:break
+                except Exception as e:print('image skip',str(e)[:120],flush=True)
+              rec['ok']=True
+            except Exception as e:rec['error']=str(e);rec['ok']=False
+            print(sid,title,'images',len(rec['images']),flush=True)
+            return rec
+          with ThreadPoolExecutor(max_workers=7) as pool:
+            manifest=list(pool.map(collect,selected.items()))
+          async def screens():
+            async with async_playwright() as p:
+              browser=await p.chromium.launch(headless=True)
+              sem=asyncio.Semaphore(4)
+              async def one(rec):
+                if not rec['ok']:return
+                async with sem:
+                  page=await browser.new_page(viewport={'width':1440,'height':1100},device_scale_factor=1.5)
+                  try:
+                    await page.goto(rec['url'],wait_until='domcontentloaded',timeout=60000)
+                    await page.wait_for_timeout(1000)
+                    await page.screenshot(path=str(root/rec['id']/'page_top.png'))
+                    rec['page_top']=rec['id']+'/page_top.png'
+                    # Capture a genuine viewport at the first substantive figure without modifying page content.
+                    pics=page.locator('img')
+                    for i in range(await pics.count()):
+                      box=await pics.nth(i).bounding_box()
+                      if box and box['width']>=300 and box['height']>=100:
+                        await pics.nth(i).scroll_into_view_if_needed()
+                        await page.screenshot(path=str(root/rec['id']/'page_figure.png'))
+                        rec['page_figure']=rec['id']+'/page_figure.png';break
+                    # Full page capped by clipping original page pixels, not rebuilding content.
+                    total=await page.evaluate('document.documentElement.scrollHeight')
+                    if total<15000:
+                      await page.screenshot(path=str(root/rec['id']/'page_full.png'),full_page=True)
+                      rec['page_full']=rec['id']+'/page_full.png'
+                  except Exception as e:rec['screenshot_error']=str(e)
+                  finally:await page.close()
+              await asyncio.gather(*(one(r) for r in manifest))
+              await browser.close()
+          asyncio.run(screens())
+          (root/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
+          print('DONE',len(manifest),'pages',sum(len(r['images']) for r in manifest),'images',flush=True)
+          PY
+          python /tmp/capture.py
+      - name: Upload captured evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ptv-vissim-tor3-official-captures
+          path: evidence/
+          retention-days: 7
