@@ -1,0 +1,113 @@
+name: PTV TOR3 additional evidence
+on:
+  push:
+    branches: [evidence/ptv-tor3-20260924]
+    paths: [.github/workflows/ptv-tor3-extra.yml]
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Install
+        run: |
+          python -m pip install --quiet requests beautifulsoup4 pillow playwright
+          python -m playwright install --with-deps chromium >/dev/null
+      - name: Download and capture official sources
+        run: |
+          mkdir -p evidence
+          cat > /tmp/extra.py <<'PY'
+          import asyncio, json, hashlib, io, time
+          from pathlib import Path
+          from urllib.parse import urljoin,urlparse
+          import requests
+          from bs4 import BeautifulSoup
+          from PIL import Image
+          from concurrent.futures import ThreadPoolExecutor
+          from playwright.async_api import async_playwright
+          root=Path('evidence');base='https://cgi.ptvgroup.com/vision-help/VISSIM_2025_ENG/Content/'
+          paths=[
+          '4_BasisdatenSim/BasisdatenFahrzeug_klass_typ_kateg.htm',
+          '4_BasisdatenSim/BasisdatenFahrzeugklassen_def.htm',
+          '4_BasisdatenSim/BasisdatenFahrzeugklassen_verw.htm',
+          '11_Auswertungen/AuswertungStreckenauswertung.htm',
+          '11_Auswertungen/AuswertungStaulaengen.htm',
+          '5_Netzbearbeiten/Stauzaehler_Attr.htm',
+          '5_Netzbearbeiten/Querverkehrsstoerungen_Beispiele.htm',
+          '5_Netzbearbeiten/Querverkehrsstoerungen_modellieren.htm',
+          '5_Netzbearbeiten/Konfliktflaechen_def.htm',
+          '8_VISWALK/Strecken_als_Fugaeflae_Konfliktflaechen.htm',
+          '6_DynamischeUml/DynamischeUmlegungsteuern.htm',
+          '6_DynamischeUml/GrundlagenderdynamischenUml.htm',
+          '6_DynamischeUml/Flussdiagr_Dyn_Uml.htm',
+          '6_DynamischeUml/Schnellstart_Dyn_Uml.htm',
+          '6_DynamischeUml/Knoten_Attr.htm',
+          '6_DynamischeUml/Knoten_modellieren.htm',
+          '4_BasisdatenSim/BasisdatenFahrzeugtypen_def_Spezial_Em.htm',
+          '4_BasisdatenSim/BasisdatenEmiklassen_def.htm',
+          '11_Auswertungen/Quick-Start-Emission-calc.htm',
+          '15_Schnittstellen/EmissionsberechnungEmissionModel.htm',
+          '9_SimulationundTest/Simulationsparameter_setzen.htm']
+          urls=[base+p for p in paths]+['https://www.fhwa.dot.gov/publications/research/safety/09054/','https://www.fhwa.dot.gov/publications/research/safety/09060/003.cfm']
+          def fetch(u):
+            sid=hashlib.sha256(u.encode()).hexdigest()[:10];d=root/sid;d.mkdir(exist_ok=True)
+            rec={'id':sid,'url':u,'images':[],'captured_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())}
+            try:
+              r=requests.get(u,timeout=40);r.raise_for_status();(d/'source.html').write_bytes(r.content)
+              s=BeautifulSoup(r.content,'html.parser');b=s.find(id='mc-main-content') or s.find('main') or s.body or s
+              h=b.find(['h1','h2']);rec['title']=h.get_text(' ',strip=True) if h else str(s.title.string)
+              rec['text']=b.get_text('\n',strip=True);(d/'source.txt').write_text(rec['text'])
+              seen=set()
+              for im in b.find_all('img'):
+                src=im.get('src') or im.get('data-src')
+                if not src:continue
+                iu=urljoin(u,src)
+                if iu in seen or not urlparse(iu).hostname.endswith(('ptvgroup.com','dot.gov')):continue
+                seen.add(iu)
+                try:
+                  q=requests.get(iu,timeout=20);q.raise_for_status();p=Image.open(io.BytesIO(q.content));w,h=p.size
+                  if w<160 or h<80:continue
+                  fn='img_%02d.png'%(len(rec['images'])+1);p.convert('RGB').save(d/fn)
+                  rec['images'].append({'file':sid+'/'+fn,'url':iu,'width':w,'height':h,'alt':im.get('alt','')})
+                  if len(rec['images'])>=16:break
+                except Exception as e:print('IMAGE',iu,str(e)[:100],flush=True)
+              rec['ok']=True
+            except Exception as e:rec['error']=str(e);rec['ok']=False
+            print(rec.get('title',u),'images',len(rec['images']),flush=True);return rec
+          with ThreadPoolExecutor(max_workers=6) as ex:manifest=list(ex.map(fetch,urls))
+          async def main():
+            async with async_playwright() as p:
+              browser=await p.chromium.launch();sem=asyncio.Semaphore(4)
+              async def one(r):
+                if not r['ok']:return
+                async with sem:
+                  page=await browser.new_page(viewport={'width':1440,'height':1100},device_scale_factor=1.5)
+                  try:
+                    await page.goto(r['url'],wait_until='domcontentloaded',timeout=60000);await page.wait_for_timeout(900)
+                    await page.screenshot(path=str(root/r['id']/'page_top.png'));r['page_top']=r['id']+'/page_top.png'
+                    imgs=page.locator('img')
+                    for i in range(await imgs.count()):
+                      box=await imgs.nth(i).bounding_box()
+                      if box and box['width']>=300 and box['height']>=100:
+                        await imgs.nth(i).scroll_into_view_if_needed();await page.screenshot(path=str(root/r['id']/'page_figure.png'));r['page_figure']=r['id']+'/page_figure.png';break
+                    if 'dot.gov' in r['url']:
+                      el=page.get_by_text('VISSIM',exact=False).first
+                      if await el.count():
+                        await el.scroll_into_view_if_needed();await page.screenshot(path=str(root/r['id']/'page_vissim.png'));r['page_vissim']=r['id']+'/page_vissim.png'
+                    total=await page.evaluate('document.documentElement.scrollHeight')
+                    if total<18000:
+                      await page.screenshot(path=str(root/r['id']/'page_full.png'),full_page=True);r['page_full']=r['id']+'/page_full.png'
+                  except Exception as e:r['screenshot_error']=str(e)
+                  finally:await page.close()
+              await asyncio.gather(*(one(r) for r in manifest));await browser.close()
+          asyncio.run(main());(root/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
+          print('DONE',len(manifest),sum(len(r['images']) for r in manifest))
+          PY
+          python /tmp/extra.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ptv-tor3-extra-captures
+          path: evidence/
+          retention-days: 7
