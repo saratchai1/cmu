@@ -1,0 +1,123 @@
+name: PTV deeper feature evidence
+on:
+  push:
+    branches: [evidence/ptv-tor3-20260924]
+    paths: [.github/workflows/ptv-deep-review.yml]
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install capture dependencies
+        run: |
+          python -m pip install --quiet requests beautifulsoup4 pillow playwright pymupdf
+          python -m playwright install --with-deps chromium >/dev/null
+      - name: Capture public sources
+        run: |
+          mkdir -p evidence
+          cat > /tmp/capture.py <<'PY'
+          import asyncio,json,time,io,re
+          from pathlib import Path
+          from urllib.parse import urljoin,urlparse
+          from concurrent.futures import ThreadPoolExecutor
+          import requests,fitz
+          from bs4 import BeautifulSoup
+          from PIL import Image
+          from playwright.async_api import async_playwright
+          root=Path('evidence')
+          base='https://cgi.ptvgroup.com/vision-help/VISSIM_2025_ENG/Content/'
+          sources=[
+          ('N01','https://www.ptvgroup.com/en/products/ptv-vissim',['Intersection & network efficiency']),
+          ('N02','https://www.ptvgroup.com/en/product_description_ptv_vissim_en.pdf?inline=',[]),
+          ('N03','https://www.ptvgroup.com/en/products/ptv-vissim/faqs',['How accurately','How do traffic simulation tools','Which traffic signal']),
+          ('N04','https://www.ptvgroup.com/en/products/ptv-vissim/use-cases/traffic-network-optimization',['queue spillback','green-wave','stress']),
+          ('N05','https://www.ptvgroup.com/en/products/ptv-vissim/use-cases/sustainable-urban-mobility',['one-click','accelerations','emissions']),
+          ('N06',base+'11_Auswertungen/AuswertungStreckenauswertung.htm',['per lane segment','certain vehicle classes','Result of evaluation']),
+          ('N07',base+'4_BasisdatenSim/BasisdatenFahrzeugklassen_def.htm',['vehicle class']),
+          ('N08',base+'RBC-2025/RBC-Intro.htm',['General Controller Features','Transitions between patterns']),
+          ('N09',base+'RBC-2025/RBC-Def-Base-Timing.htm',['Lead','Sequence','Overlaps Parameters']),
+          ('N10',base+'5_Netzbearbeiten/SignalgruppenundSignalgeber.htm',['several signal heads','signal controller']),
+          ('N11','https://blog.ptvgroup.com/en/modeling-planning/marathon-on-maratonska-street-simulating-future-traffic-in-lodz/',['Microsimulation with PTV Vissim','Results of Vissim simulations','turbo roundabout']),
+          ('N12','https://intelligentsystemseee.ntu.edu.sg/cpisrg/urban/urban_sim.html',['more than 200']),
+          ('N13','https://www.txdot.gov/manuals/des/tsp/chapter-13-microsimulation-analysis/13-4-base-model-development/13-4-5-basic-geometry---arterial-coding/13-4-5-1-traffic-control-devices.html',['AWSC','Stop Signs']),
+          ('N14','https://www.txdot.gov/content/txdotoms/us/en/manuals/des/tsp/chapter-10-intersection-analysis/10-3-intersection-control-evaluation---process-and/10-3-4-stage-2-operational-performance-and-ice/10-3-4-1-service-volumes.html',['Vissim','Table 10-2']),
+          ('N15','https://www.mdpi.com/2071-1050/15/3/1860',['all-way stop','Figure 2']),
+          ('N16','https://blog.ptvgroup.com/en/user-insights/traffic-light-synchronization-milan-ptv-vissim/',['Building the PTV Vissim model','Dynamic assignment']),
+          ('N17',base+'5_Netzbearbeiten/LSASteuerungsverfahren_FestzeitGruenzeit.htm',['delay','green time']),
+          ('N18','https://cgi.ptvgroup.com/vision-help/VISSIM_2026_EN-DE/en-us/Content/11_Auswertungen/Umweltfolgenabschaetzung.htm',['CO2','aixzellent','CO']),
+          ('N19','https://www.ptvgroup.com/en/products/traffic-engineering-software-ptv-vistro',['HCM','time-space']),
+          ('N20','https://cgi.ptvgroup.com/vision-help/VISSIM_2026_EN-DE/en-us/Content/11_Auswertungen/AuswertungKnotenauswertung.htm',['HCM 2010','vehicle classes','Fuel']),
+          ('N21',base+'1_Einfuehrung/ZugriffVerzEXAMPLES.htm',['Examples']),
+          ('N22',base+'5_Netzbearbeiten/Datei_speichern_Teilnetz.htm',['Save']),
+          ('N23','https://blog.ptvgroup.com/en/user-insights/triangulating-intersection-delay-with-ptv-vissim-in-hyderabad/',['HCM','calibration'])]
+          def fetch(spec):
+            sid,u,terms=spec;d=root/sid;d.mkdir(exist_ok=True)
+            rec={'id':sid,'url':u,'terms':terms,'images':[],'captured_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())}
+            try:
+              r=requests.get(u,timeout=40);rec['http_status']=r.status_code;r.raise_for_status()
+              if 'application/pdf' in r.headers.get('Content-Type','') or r.content[:4]==b'%PDF':
+                (d/'source.pdf').write_bytes(r.content);pdf=fitz.open(stream=r.content,filetype='pdf');rec['title']='PTV Vissim Product Description';rec['pdf_pages']=len(pdf);rec['text']='\n'.join(p.get_text() for p in pdf)
+                for j in range(len(pdf)):
+                  if j in [1,2,3]:pdf[j].get_pixmap(matrix=fitz.Matrix(2,2)).save(d/f'page_{j+1}.png')
+                rec['pdf']=True
+              else:
+                (d/'source.html').write_bytes(r.content);s=BeautifulSoup(r.content,'html.parser');b=s.find(id='mc-main-content') or s.find('main') or s.body or s
+                rec['title']=s.title.get_text(' ',strip=True) if s.title else sid;rec['text']=b.get_text('\n',strip=True)
+                seen=set()
+                for im in b.find_all('img'):
+                  src=im.get('data-src') or im.get('src')
+                  if not src:continue
+                  iu=urljoin(u,src);host=urlparse(iu).hostname or ''
+                  if iu in seen or not host.endswith(('ptvgroup.com','ntu.edu.sg','txdot.gov','mdpi.com','mdpi-res.com')):continue
+                  seen.add(iu)
+                  try:
+                    q=requests.get(iu,timeout=18);q.raise_for_status();p=Image.open(io.BytesIO(q.content));w,h=p.size
+                    if w<220 or h<120:continue
+                    fn=f'img_{len(rec["images"])+1:02d}.png';p.convert('RGB').save(d/fn)
+                    rec['images'].append({'file':sid+'/'+fn,'url':iu,'width':w,'height':h,'alt':im.get('alt','')})
+                    if len(rec['images'])>=10:break
+                  except Exception:pass
+              (d/'source.txt').write_text(rec['text'],encoding='utf-8');rec['ok']=True
+            except Exception as e:rec['ok']=False;rec['error']=str(e)
+            print(sid,rec.get('http_status'),len(rec['images']),rec.get('title'),flush=True);return rec
+          with ThreadPoolExecutor(max_workers=5) as ex:manifest=list(ex.map(fetch,sources))
+          async def run():
+            async with async_playwright() as p:
+              browser=await p.chromium.launch();sem=asyncio.Semaphore(3)
+              async def one(rec):
+                if rec.get('pdf'):return
+                async with sem:
+                  page=await browser.new_page(viewport={'width':1380,'height':960},device_scale_factor=1.4)
+                  try:
+                    response=await page.goto(rec['url'],wait_until='domcontentloaded',timeout=60000);await page.wait_for_timeout(1200)
+                    rec['browser_status']=response.status if response else None
+                    for selector in ['#onetrust-reject-all-handler','#onetrust-accept-btn-handler']:
+                      el=page.locator(selector)
+                      if await el.count() and await el.first.is_visible():
+                        await el.first.click();break
+                    rec['browser_text']=await page.locator('body').inner_text();(root/rec['id']/'browser.txt').write_text(rec['browser_text'])
+                    await page.screenshot(path=str(root/rec['id']/'screen_top.png'))
+                    rec['screens']=[]
+                    for i,t in enumerate(rec['terms']):
+                      el=page.locator('p,li,td,h1,h2,h3,h4').filter(has_text=re.compile(re.escape(t),re.I))
+                      if not await el.count():continue
+                      chosen=el.first
+                      for j in range(min(await el.count(),20)):
+                        if await el.nth(j).is_visible():chosen=el.nth(j);break
+                      await chosen.scroll_into_view_if_needed();box=await chosen.bounding_box()
+                      if box:await page.evaluate('(y)=>window.scrollBy(0,y)',box['y']-160)
+                      fn=f'screen_{i+1:02d}.png';await page.screenshot(path=str(root/rec['id']/fn));rec['screens'].append({'term':t,'file':rec['id']+'/'+fn})
+                  except Exception as e:rec['browser_error']=str(e)
+                  finally:await page.close()
+              await asyncio.gather(*(one(r) for r in manifest));await browser.close()
+          asyncio.run(run());(root/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
+          PY
+          python /tmp/capture.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ptv-deep-review-captures
+          path: evidence/
+          retention-days: 14
