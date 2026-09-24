@@ -1,0 +1,39 @@
+name: PTV TOR3 roundabout and current references
+on:
+  push:
+    branches: [evidence/ptv-tor3-20260924]
+    paths: [.github/workflows/ptv-tor3-roundabout.yml]
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install
+        run: |
+          python -m pip install --quiet requests beautifulsoup4 pillow playwright pyyaml
+          python -m playwright install --with-deps chromium >/dev/null
+      - name: Capture targeted pages
+        run: |
+          python - <<'PY'
+          import yaml,re
+          from pathlib import Path
+          d=yaml.safe_load(Path('.github/workflows/ptv-tor3-extra.yml').read_text())
+          script=d['jobs']['capture']['steps'][1]['run'].split("cat > /tmp/extra.py <<'PY'\n",1)[1].rsplit('\nPY',1)[0]
+          paths=['5_Netzbearbeiten/Querverkehrsstoerungen_Beispiel_1.htm','5_Netzbearbeiten/Querverkehrsstoerungen_Beispiel_2.htm','5_Netzbearbeiten/Querverkehrsstoerungen_Beispiel_3.htm','6_DynamischeUml/Dyn_Uml_Attr_Dateien.htm','6_DynamischeUml/Dyn_Uml_Attr_Kosten.htm','6_DynamischeUml/Dyn_Uml_Attr_Suche.htm','6_DynamischeUml/Dyn_Uml_Attr_Wahl.htm','6_DynamischeUml/Dyn_Uml_Attr_Konvergenz.htm']
+          urls=['https://cgi.ptvgroup.com/vision-help/VISSIM_2025_ENG/Content/'+p for p in paths]
+          urls += ['https://cgi.ptvgroup.com/vision-help/VISSIM_2026_EN-DE/en-us/Content/11_Auswertungen/Umweltfolgenabschaetzung.htm','https://cgi.ptvgroup.com/vision-help/VISSIM_2026_EN-DE/en-us/Content/11_Auswertungen/AuswertungKnotenauswertung.htm','https://cgi.ptvgroup.com/vision-help/VISSIM_2026_EN-DE/en-us/Content/4_BasisdatenSim/BasisdatenFahrzeugtypen_def_Spezial_Em.htm']
+          start=script.index('paths=[');end=script.index('\ndef fetch(u):')
+          script=script[:start]+'urls='+repr(urls)+'\n'+script[end:]
+          Path('evidence').mkdir(exist_ok=True)
+          Path('/tmp/target.py').write_text(script)
+          PY
+          python /tmp/target.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ptv-tor3-roundabout-captures
+          path: evidence/
+          retention-days: 7
